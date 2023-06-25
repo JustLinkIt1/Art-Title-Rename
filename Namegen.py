@@ -1,12 +1,14 @@
 import os
 import csv
 import torch
+import time
 from PIL import Image
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer, pipeline
 from dotenv import load_dotenv
 import openai
 from tqdm import tqdm
 from collections import Counter
+from retrying import retry
 
 # Load .env file
 load_dotenv()
@@ -25,8 +27,8 @@ tokenizer = AutoTokenizer.from_pretrained("nlpconnect/vit-gpt2-image-captioning"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
-max_length = 16
-num_beams = 4
+max_length = 32  # Adjusted max_length parameter
+num_beams = 8    # Adjusted num_beams parameter
 gen_kwargs = {"max_length": max_length, "num_beams": num_beams}
 
 def get_image_description(image_path):
@@ -46,24 +48,28 @@ def get_image_description(image_path):
     
     return preds[0]
 
+@retry(stop_max_attempt_number=5, wait_fixed=2000)
 def generate_title(description):
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": f"Generate a short title for an artwork described as: {description}"},
-    ]
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=messages,
-        max_tokens=10,  # you might need to adjust this depending on the length of the generated titles
-        temperature=0.5  # higher temperature values (closer to 1) will generate more random output, which may be more abstract
-    )
-    title = response['choices'][0]['message']['content'].strip()  # get the generated title
-    title = title.replace('"', '')  # remove any quotation marks
-    title = ' '.join(title.split()[:5])  # limit to five words
-    return title
-
-
-
+    try:
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": f"Generate a short title for an artwork described as: {description}"},
+        ]
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            max_tokens=10,
+            temperature=0.5
+        )
+        title = response['choices'][0]['message']['content'].strip()
+        title = title.replace('"', '')
+        title = ' '.join(title.split()[:5])
+        return title
+    except openai.error.ServiceUnavailableError:
+        print("OpenAI API rate limit reached or server error. Retrying...")
+        time.sleep(60)
+        raise
+    
 def read_existing_titles(csv_file_path):
     if not os.path.exists(csv_file_path):
         return []
